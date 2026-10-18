@@ -1,20 +1,30 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Character } from "@prisma/client";
 import {
-  buildWorkflow,
-  fillWorkflow,
   portraitPrompt,
   queueImage,
   imageHistory,
 } from "@/lib/integrations/comfyui";
 import { ollamaStatus, replyWithOllama } from "@/lib/integrations/ollama";
 import { newCompanion } from "@/lib/defaults";
+import { getComfySettings } from "@/lib/comfy-settings";
+import { readProfile } from "@/lib/profile";
+import {
+  inferBindings,
+  comfySettingsSchema,
+  type ObjectInfo,
+} from "@/lib/comfy-workflow";
+import template from "../../workflows/z-image-turbo.api.json";
+vi.mock("@/lib/comfy-settings", () => ({ getComfySettings: vi.fn() }));
 
 const character = {
   ...newCompanion,
   id: "test",
   createdAt: new Date(),
   updatedAt: new Date(),
+  profile: JSON.parse(JSON.stringify(readProfile(newCompanion.profile))),
+  portraitId: null,
+  portraitSpec: null,
 } as Character;
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -79,48 +89,69 @@ describe("Ollama protocol", () => {
   });
 });
 
-describe("ComfyUI workflow", () => {
-  it("includes the adult age, wardrobe and requested scene in generation", () => {
-    const prompt = portraitPrompt(character, "a sunny garden");
+const settings = comfySettingsSchema.parse({
+  baseUrl: "http://127.0.0.1:8188",
+  workflow: template,
+  bindings: inferBindings(template),
+  model: "z_image_turbo_bf16.safetensors",
+  clip: "qwen_3_4b.safetensors",
+  vae: "ae.safetensors",
+});
+const info: ObjectInfo = Object.fromEntries(
+  Object.values(template).map((node) => [
+    node.class_type,
+    { input: { required: {} }, output: ["*", "*", "*"] },
+  ]),
+);
+describe("ComfyUI API integration", () => {
+  it("uses detailed visual fields without sending private biography to the image service", () => {
+    const prompt = portraitPrompt(
+      {
+        ...newCompanion,
+        profile: readProfile({
+          gender: "man",
+          eyeColor: "green",
+          appearanceDescription: "distinctive adult face",
+          privateDetails: "do not send this secret",
+        }),
+      },
+      "a sunny garden",
+    );
     expect(prompt).toContain("27 years old");
-    expect(prompt).toContain("yoga pants");
-    expect(prompt).toContain(character.outfitColor);
-    expect(prompt).toContain("a sunny garden");
-    const workflow = buildWorkflow(prompt, "portrait.safetensors", 123);
-    expect(workflow["1"].inputs.ckpt_name).toBe("portrait.safetensors");
-    expect(workflow["5"].inputs.seed).toBe(123);
-    expect(workflow["7"].class_type).toBe("SaveImage");
+    expect(prompt).toContain("green");
+    expect(prompt).toContain("distinctive adult face");
+    expect(prompt).not.toContain("do not send this secret");
+    expect(prompt).not.toContain("adult woman");
   });
-  it("substitutes custom workflow placeholders without reparsing prompt text", () => {
-    expect(
-      fillWorkflow(
-        { text: "{{PROMPT}}", seed: "{{SEED}}" },
-        'a "quoted" scene',
-        42,
-      ),
-    ).toEqual({ text: 'a "quoted" scene', seed: "42" });
-  });
-  it("queues a real API-format request and returns the prompt id", async () => {
-    vi.stubEnv("COMFYUI_CHECKPOINT", "portrait.safetensors");
-    vi.stubEnv("COMFYUI_WORKFLOW_PATH", "");
+  it("binds the actual imported graph and saves the submitted prompt, seed and workflow", async () => {
+    vi.mocked(getComfySettings).mockResolvedValue(settings);
     const fetcher = vi
       .fn()
-      .mockResolvedValue(
+      .mockResolvedValueOnce(new Response(JSON.stringify(info)))
+      .mockResolvedValueOnce(
         new Response(JSON.stringify({ prompt_id: "job-123" })),
       );
     vi.stubGlobal("fetch", fetcher);
-    expect(await queueImage(character, "in the garden")).toBe("job-123");
-    const payload = JSON.parse(fetcher.mock.calls[0][1].body);
-    expect(payload.prompt["2"].inputs.text).toContain("in the garden");
+    const result = await queueImage(character, "in the garden");
+    expect(result.promptId).toBe("job-123");
+    const payload = JSON.parse(fetcher.mock.calls[1][1].body);
+    const target = settings.bindings.prompt!;
+    expect(payload.prompt[target.nodeId].inputs[target.input]).toContain(
+      "in the garden",
+    );
+    expect(result.metadata.seed).toBe(42);
+    expect(result.metadata.workflow).toEqual(payload.prompt);
   });
-  it("does not pretend image generation succeeded without a checkpoint", async () => {
-    vi.stubEnv("COMFYUI_CHECKPOINT", "");
-    vi.stubEnv("COMFYUI_WORKFLOW_PATH", "");
+  it("refuses to manufacture a workflow when none was imported", async () => {
+    vi.mocked(getComfySettings).mockResolvedValue({
+      ...settings,
+      workflow: null,
+    });
     await expect(queueImage(character, "garden")).rejects.toThrow(
-      "COMFYUI_CHECKPOINT",
+      "Import a ComfyUI API workflow",
     );
   });
-  it("distinguishes an unfinished job from a completed history entry", async () => {
+  it("distinguishes pending history from completed history", async () => {
     vi.stubGlobal(
       "fetch",
       vi
@@ -134,7 +165,9 @@ describe("ComfyUI workflow", () => {
           ),
         ),
     );
-    expect(await imageHistory("id")).toBeNull();
-    expect((await imageHistory("id"))?.status?.completed).toBe(true);
+    expect(await imageHistory("id", settings.baseUrl)).toBeNull();
+    expect(
+      (await imageHistory("id", settings.baseUrl))?.status?.completed,
+    ).toBe(true);
   });
 });

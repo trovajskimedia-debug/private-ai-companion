@@ -1,5 +1,5 @@
 "use client";
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   Check,
   ChevronLeft,
@@ -12,8 +12,13 @@ import {
 } from "lucide-react";
 import { newCompanion } from "@/lib/defaults";
 import { api } from "@/lib/client";
-import type { Character, CharacterInput } from "@/lib/types";
+import type { Character, CharacterInput, ImageJob } from "@/lib/types";
 import { Avatar } from "./avatar";
+import { readProfile, type CharacterProfile } from "@/lib/profile";
+import { visualSpec } from "@/lib/visual-prompt";
+import { ProfileFields } from "./profile-fields";
+import { Gallery } from "./gallery";
+import { ReferencePicker } from "./reference-picker";
 
 const clothes = [
   {
@@ -46,35 +51,134 @@ export function Studio({
   character,
   onSave,
   onCancel,
+  onPersist,
   wardrobeOnly = false,
 }: {
   character: Character | null;
   onSave: (character: Character) => void;
   onCancel: () => void;
+  onPersist?: (character: Character) => void;
   wardrobeOnly?: boolean;
 }) {
   const [draft, setDraft] = useState<CharacterInput>(
-    character ? { ...character } : { ...newCompanion },
+    character
+      ? {
+          ...character,
+          profile: readProfile(character.profile, character.relationship?.kind),
+        }
+      : { ...newCompanion, profile: readProfile(newCompanion.profile) },
   );
+  const [record, setRecord] = useState<Character | null>(character);
+  const [jobs, setJobs] = useState<ImageJob[]>([]);
+  const [galleryKey, setGalleryKey] = useState(0);
+  const [previewNotice, setPreviewNotice] = useState("");
+  const [scene, setScene] = useState(
+    "Full-length portrait in soft window light, neutral photographic background",
+  );
+  const pollBusy = useRef(false);
   const [tab, setTab] = useState(wardrobeOnly ? "wardrobe" : "identity");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const profile = readProfile(draft.profile);
+  const setProfile = <K extends keyof CharacterProfile>(
+    key: K,
+    value: CharacterProfile[K],
+  ) =>
+    setDraft((prev) => ({
+      ...prev,
+      profile: { ...readProfile(prev.profile), [key]: value },
+    }));
+  useEffect(() => {
+    if (record?.id)
+      api<ImageJob[]>(`/api/characters/${record.id}/images`)
+        .then((data) =>
+          setJobs((current) => [
+            ...current,
+            ...data.filter(
+              (job) => !current.some((item) => item.id === job.id),
+            ),
+          ]),
+        )
+        .catch((e) => setError(e.message));
+  }, [record?.id]);
+  useEffect(() => {
+    if (!jobs.length) return;
+    let active = true;
+    const timer = setInterval(async () => {
+      if (pollBusy.current) return;
+      pollBusy.current = true;
+      try {
+        const results = await Promise.all(
+          jobs.map((job) =>
+            api<ImageJob>(`/api/jobs/${job.id}`, { method: "POST" }),
+          ),
+        );
+        if (!active) return;
+        const failed = results.find((job) => job.status === "failed");
+        if (failed) setError(failed.error || "Image generation failed.");
+        for (const job of results)
+          if (job.status === "completed") {
+            if (job.character) {
+              setRecord(job.character);
+              onPersist?.(job.character);
+            }
+            setGalleryKey((key) => key + 1);
+            setPreviewNotice("Your generated image has been saved locally.");
+          }
+        setJobs(
+          results.filter(
+            (job) => job.status === "running" || job.status === "queued",
+          ),
+        );
+      } catch (e) {
+        if (active) setError((e as Error).message);
+      } finally {
+        pollBusy.current = false;
+      }
+    }, 3000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [jobs, onPersist]);
   function set<K extends keyof CharacterInput>(
     key: K,
     value: CharacterInput[K],
   ) {
     setDraft((prev) => ({ ...prev, [key]: value }));
   }
+  async function persist() {
+    const saved = await api<Character>(
+      record ? `/api/characters/${record.id}` : "/api/characters",
+      { method: record ? "PATCH" : "POST", body: JSON.stringify(draft) },
+    );
+    setRecord(saved);
+    onPersist?.(saved);
+    return saved;
+  }
   async function submit(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError("");
     try {
-      const saved = await api<Character>(
-        character ? `/api/characters/${character.id}` : "/api/characters",
-        { method: character ? "PATCH" : "POST", body: JSON.stringify(draft) },
-      );
-      onSave(saved);
+      onSave(await persist());
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function generatePreview() {
+    setBusy(true);
+    setError("");
+    setPreviewNotice("");
+    try {
+      const saved = await persist();
+      const job = await api<ImageJob>(`/api/characters/${saved.id}/images`, {
+        method: "POST",
+        body: JSON.stringify({ prompt: scene, purpose: "portrait" }),
+      });
+      setJobs([job]);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -110,11 +214,17 @@ export function Studio({
         <aside className="preview-panel">
           <div className="preview-top">
             <span className="pill">
-              <Sparkles size={12} /> LIVE PREVIEW
+              <Sparkles size={12} />{" "}
+              {record?.portraitId
+                ? "GENERATED PORTRAIT"
+                : "ILLUSTRATED FALLBACK"}
             </span>
             <span>18+</span>
           </div>
-          <Avatar character={draft} className="studio-avatar" />
+          <Avatar
+            character={{ ...draft, portraitId: record?.portraitId }}
+            className="studio-avatar"
+          />
           <div className="preview-caption">
             <h2>
               {draft.name || "Your companion"}
@@ -122,8 +232,61 @@ export function Studio({
             </h2>
             <p>{draft.personality}</p>
             <span>
-              Illustrated preview · Generated photos available in chat
+              {record?.portraitId
+                ? "AI-generated photograph · stored privately"
+                : "Generate a real photo with your local ComfyUI workflow."}
             </span>
+            {record?.portraitId &&
+              record.portraitSpec !== visualSpec(draft) && (
+                <p className="portrait-stale">
+                  Your settings differ from this saved photo. Generate a new
+                  preview to apply them.
+                </p>
+              )}
+            <label className="preview-scene">
+              Portrait scene
+              <textarea
+                rows={2}
+                maxLength={1500}
+                minLength={3}
+                value={scene}
+                onChange={(e) => setScene(e.target.value)}
+              />
+            </label>
+            <button
+              type="button"
+              className="button primary generate-preview"
+              disabled={busy || !!jobs.length}
+              onClick={generatePreview}
+            >
+              {busy || jobs.length ? (
+                <LoaderCircle className="spin" size={16} />
+              ) : (
+                <Sparkles size={16} />
+              )}
+              Generate realistic preview
+            </button>
+            {jobs.length > 0 && (
+              <p className="preview-progress" role="status">
+                ComfyUI is generating an image… The job is saved if you leave
+                this page.
+              </p>
+            )}
+            {previewNotice && (
+              <p className="save-notice" role="status">
+                {previewNotice}
+              </p>
+            )}
+            {error && (
+              <p className="form-error" role="alert">
+                {error}
+              </p>
+            )}
+            <small className="input-hint">
+              Current character settings are saved before generation. A seed
+              helps repeat a render; it does not guarantee the same face in
+              every scene.
+            </small>
           </div>
         </aside>
         <section className="studio-panel">
@@ -134,13 +297,17 @@ export function Studio({
               aria-label="Character options"
             >
               {[
-                { id: "identity", label: "Personality", icon: UserRound },
+                { id: "identity", label: "Basic info", icon: UserRound },
+                { id: "personality", label: "Personality", icon: UserRound },
+                { id: "history", label: "Backstory", icon: UserRound },
                 {
                   id: "appearance",
                   label: "Appearance",
                   icon: SlidersHorizontal,
                 },
                 { id: "wardrobe", label: "Wardrobe", icon: Shirt },
+                { id: "relationship", label: "Relationship", icon: UserRound },
+                { id: "advanced", label: "Advanced", icon: SlidersHorizontal },
               ].map(({ id, label, icon: Icon }) => (
                 <button
                   key={id}
@@ -226,14 +393,68 @@ export function Studio({
                     </button>
                   ))}
                 </div>
+                <ProfileFields
+                  section="identity"
+                  profile={profile}
+                  onChange={(value) => set("profile", value)}
+                />
+              </>
+            )}
+            {["personality", "history", "relationship"].includes(tab) && (
+              <ProfileFields
+                section={tab}
+                profile={profile}
+                onChange={(value) => set("profile", value)}
+              />
+            )}
+            {tab === "advanced" && (
+              <>
+                <h2>Full character description</h2>
+                <p className="section-description">
+                  Write the complete character in your own words. This context
+                  is kept separately from chat history.
+                </p>
+                <label>
+                  Full character description
+                  <textarea
+                    rows={12}
+                    maxLength={12000}
+                    value={profile.fullDescription}
+                    onChange={(e) =>
+                      setProfile("fullDescription", e.target.value)
+                    }
+                  />
+                </label>
+                <ProfileFields
+                  section="conversation"
+                  profile={profile}
+                  onChange={(value) => set("profile", value)}
+                />
+                <label>
+                  Image generation seed
+                  <input
+                    type="number"
+                    min={0}
+                    max={4294967295}
+                    step={1}
+                    value={profile.seed}
+                    onChange={(e) => setProfile("seed", Number(e.target.value))}
+                  />
+                </label>
+                <ReferencePicker
+                  characterId={record?.id}
+                  selected={profile.referenceImageId}
+                  onSelect={(id) => setProfile("referenceImageId", id)}
+                  ensureSaved={persist}
+                />
               </>
             )}
             {tab === "appearance" && (
               <>
                 <h2>A look that’s their own.</h2>
                 <p className="section-description">
-                  Adjust their silhouette and see the illustration change in
-                  real time.
+                  Describe a fictional adult in detail. Generate a new photo to
+                  apply changes to the saved portrait.
                 </p>
                 <Slider
                   label="Height"
@@ -261,6 +482,68 @@ export function Studio({
                   end="Fuller"
                   onChange={(v) => set("curves", v)}
                 />
+                {(
+                  [
+                    { key: "bust", label: "Bust size" },
+                    { key: "waist", label: "Waist" },
+                    { key: "hips", label: "Hips" },
+                    { key: "butt", label: "Buttocks size" },
+                  ] as const
+                ).map((item) => (
+                  <Slider
+                    key={item.key}
+                    label={item.label}
+                    value={profile[item.key]}
+                    min={0}
+                    max={100}
+                    start="Subtle / slender"
+                    end="Exaggerated / full"
+                    onChange={(value) => setProfile(item.key, value)}
+                  />
+                ))}
+                <label>
+                  Body proportions
+                  <input
+                    value={profile.proportions}
+                    onChange={(e) => setProfile("proportions", e.target.value)}
+                    maxLength={1500}
+                  />
+                </label>
+                <label>
+                  Detailed appearance description
+                  <textarea
+                    aria-label="Detailed appearance description"
+                    rows={7}
+                    value={profile.appearanceDescription}
+                    onChange={(e) =>
+                      setProfile("appearanceDescription", e.target.value)
+                    }
+                    maxLength={4000}
+                  />
+                  <small>
+                    Included directly in ComfyUI photo prompts. Exaggerated
+                    proportions must remain clearly fictional and adult.
+                  </small>
+                </label>
+                {(
+                  [
+                    { key: "eyeColor", label: "Eye color" },
+                    { key: "faceShape", label: "Face shape" },
+                    { key: "facialFeatures", label: "Facial features" },
+                    { key: "makeup", label: "Makeup" },
+                    { key: "clothingStyle", label: "Clothing style" },
+                    { key: "environment", label: "Background and environment" },
+                  ] as const
+                ).map((item) => (
+                  <label key={item.key}>
+                    {item.label}
+                    <input
+                      value={profile[item.key]}
+                      onChange={(e) => setProfile(item.key, e.target.value)}
+                      maxLength={1500}
+                    />
+                  </label>
+                ))}
                 <ColorPicker
                   label="Skin tone"
                   color={draft.skinColor}
@@ -331,7 +614,10 @@ export function Studio({
                       onClick={() => set("outfit", item.id)}
                     >
                       <div className="outfit-art">
-                        <Avatar character={{ ...draft, outfit: item.id }} />
+                        <Avatar
+                          character={{ ...draft, outfit: item.id }}
+                          illustrationOnly
+                        />
                       </div>
                       <strong>{item.name}</strong>
                       <small>{item.description}</small>
@@ -389,11 +675,21 @@ export function Studio({
               ) : (
                 <Check size={16} />
               )}
-              {character ? "Save changes" : "Create companion"}
+              {record ? "Save changes" : "Create companion"}
             </button>
           </div>
         </section>
       </form>
+      {record && (
+        <Gallery
+          characterId={record.id}
+          refreshKey={galleryKey}
+          onPortrait={(saved) => {
+            setRecord(saved);
+            onPersist?.(saved);
+          }}
+        />
+      )}
     </>
   );
 }

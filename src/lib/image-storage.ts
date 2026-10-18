@@ -3,7 +3,8 @@ import { mkdir, writeFile, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { db } from "./db";
 import { ApiError } from "./http";
-import { comfyBase, imageHistory } from "./integrations/comfyui";
+import { comfyFetch, imageHistory } from "./integrations/comfyui";
+import { getComfySettings } from "./comfy-settings";
 import { withChatLock } from "./chat-lock";
 
 export const imageDirectory = () => path.join(process.cwd(), "data", "images");
@@ -24,15 +25,21 @@ export async function resolveImageJob(id: string) {
       });
     }
     if (!job.promptId) return job;
-    const history = await imageHistory(job.promptId);
+    const serverUrl = job.serverUrl || (await getComfySettings()).baseUrl;
+    const history = await imageHistory(job.promptId, serverUrl);
     if (!history) return job;
     if (history.status?.status_str === "error")
       return db.imageJob.update({
         where: { id },
         data: {
           status: "failed",
-          error:
-            "ComfyUI reported an execution error. Check its model and node configuration.",
+          error: history.status.messages?.some(([, data]) =>
+            /OutOfMemory|out of memory/i.test(
+              `${data.exception_type} ${data.exception_message}`,
+            ),
+          )
+            ? "ComfyUI ran out of GPU memory. Try 512×768, batch size 1, and close other GPU applications. RTX 3060 VRAM differs between variants."
+            : "ComfyUI reported an execution error. Check its model and node configuration.",
         },
       });
     const output = Object.values(history.outputs || {}).flatMap(
@@ -55,10 +62,7 @@ export async function resolveImageJob(id: string) {
       subfolder: output.subfolder || "",
       type: output.type || "output",
     });
-    const response = await fetch(`${comfyBase()}/view?${params}`, {
-      signal: AbortSignal.timeout(30_000),
-      cache: "no-store",
-    });
+    const response = await comfyFetch(serverUrl, `/view?${params}`, {}, 30_000);
     if (!response.ok)
       throw new ApiError(
         502,
@@ -84,16 +88,22 @@ export async function resolveImageJob(id: string) {
     await writeFile(fullPath, data, { mode: 0o600 });
     try {
       return await db.$transaction(async (tx) => {
-        await tx.message.create({
+        const message = await tx.message.create({
           data: {
             characterId: job.characterId,
             role: "assistant",
-            kind: "image",
+            kind: job.purpose === "portrait" ? "portrait" : "image",
             content: job.prompt,
             imagePath: filename,
             provider: "comfyui",
+            metadata: JSON.parse(JSON.stringify(job.metadata)),
           },
         });
+        if (job.purpose === "portrait")
+          await tx.character.update({
+            where: { id: job.characterId },
+            data: { portraitId: message.id, portraitSpec: job.renderSpec },
+          });
         return tx.imageJob.update({
           where: { id },
           data: { status: "completed" },

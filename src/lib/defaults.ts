@@ -1,4 +1,5 @@
 import type { CharacterInput } from "./types";
+import { readProfile } from "./profile";
 
 export const newCompanion: CharacterInput = {
   name: "Nova",
@@ -16,6 +17,7 @@ export const newCompanion: CharacterInput = {
   outfit: "yoga",
   outfitColor: "#8276ad",
   topColor: "#e8dfd0",
+  profile: readProfile({ gender: "woman", pronouns: "she/her" }),
 };
 export const starterCompanions: CharacterInput[] = [
   {

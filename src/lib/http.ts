@@ -34,11 +34,11 @@ export async function route(fn: () => Promise<Response>) {
   }
 }
 
-export async function body(request: Request) {
-  if (Number(request.headers.get("content-length") || 0) > 24_000)
+export async function body(request: Request, limit = 24_000) {
+  if (Number(request.headers.get("content-length") || 0) > limit)
     throw new ApiError(413, "Request is too large.");
   const text = await request.text();
-  if (text.length > 24_000) throw new ApiError(413, "Request is too large.");
+  if (text.length > limit) throw new ApiError(413, "Request is too large.");
   try {
     return JSON.parse(text);
   } catch {

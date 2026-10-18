@@ -13,11 +13,20 @@ export async function PATCH(request: Request, context: Context) {
     const { id } = await context.params;
     if (!(await db.character.findUnique({ where: { id } })))
       throw new ApiError(404, "Companion not found.");
-    const data = characterSchema.parse(await body(request));
+    const data = characterSchema.parse(await body(request, 160_000));
     return json(
       await db.character.update({
         where: { id },
-        data,
+        data: {
+          ...data,
+          ...(data.profile
+            ? {
+                relationship: {
+                  update: { kind: data.profile.relationshipRole },
+                },
+              }
+            : {}),
+        },
         include: { relationship: true },
       }),
     );
@@ -32,7 +41,10 @@ export async function DELETE(request: Request, context: Context) {
       withChatLock(`image:${id}`, async () => {
         const character = await db.character.findUnique({
           where: { id },
-          include: { messages: { select: { imagePath: true } } },
+          include: {
+            messages: { select: { imagePath: true } },
+            references: { select: { filename: true } },
+          },
         });
         if (!character) throw new ApiError(404, "Companion not found.");
         const active = await db.imageJob.count({
@@ -43,9 +55,10 @@ export async function DELETE(request: Request, context: Context) {
             409,
             "Wait for the image job to finish before deleting this companion.",
           );
-        await purgeImages(
-          character.messages.map((message) => message.imagePath),
-        );
+        await purgeImages([
+          ...character.messages.map((message) => message.imagePath),
+          ...character.references.map((image) => image.filename),
+        ]);
         await db.character.delete({ where: { id } });
         return json({ ok: true });
       }),

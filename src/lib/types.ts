@@ -1,3 +1,4 @@
+import type { CharacterProfile } from "./profile";
 export type View =
   "companions" | "studio" | "wardrobe" | "relationships" | "chat" | "settings";
 export type Relationship = {
@@ -24,9 +25,15 @@ export type Character = {
   outfit: string;
   outfitColor: string;
   topColor: string;
+  profile?: CharacterProfile;
+  portraitId?: string | null;
+  portraitSpec?: string | null;
   relationship: Relationship | null;
 };
-export type CharacterInput = Omit<Character, "id" | "relationship">;
+export type CharacterInput = Omit<
+  Character,
+  "id" | "relationship" | "portraitId" | "portraitSpec"
+>;
 export type Message = {
   id: string;
   role: string;
@@ -35,6 +42,7 @@ export type Message = {
   imagePath: string | null;
   provider: string;
   createdAt: string;
+  metadata?: Record<string, unknown>;
 };
 export type Services = {
   ollama: {
@@ -46,7 +54,16 @@ export type Services = {
   comfyui: {
     connected: boolean;
     checkpointConfigured: boolean;
+    ready?: boolean;
+    model?: string;
+    issues?: string[];
     error?: string;
   };
 };
-export type ImageJob = { id: string; status: string; error: string | null };
+export type ImageJob = {
+  id: string;
+  status: string;
+  error: string | null;
+  purpose?: string;
+  character?: Character;
+};

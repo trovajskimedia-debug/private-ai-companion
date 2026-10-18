@@ -20,27 +20,31 @@ model Session {
 }
 
 model Character {
-  id          String       @id @default(cuid())
-  name        String
-  age         Int          @default(25)
-  bio         String
-  personality String
-  interests   String
-  avatar      String       @default("sage")
-  skinColor   String       @default("#d4a484")
-  hairColor   String       @default("#342720")
-  hairStyle   String       @default("long")
-  height      Int          @default(168)
-  build       Int          @default(45)
-  curves      Int          @default(50)
-  outfit      String       @default("yoga")
-  outfitColor String       @default("#8276ad")
-  topColor    String       @default("#e8dfd0")
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  id           String           @id @default(cuid())
+  name         String
+  age          Int              @default(25)
+  bio          String
+  personality  String
+  interests    String
+  avatar       String           @default("sage")
+  skinColor    String           @default("#d4a484")
+  hairColor    String           @default("#342720")
+  hairStyle    String           @default("long")
+  height       Int              @default(168)
+  build        Int              @default(45)
+  curves       Int              @default(50)
+  outfit       String           @default("yoga")
+  outfitColor  String           @default("#8276ad")
+  topColor     String           @default("#e8dfd0")
+  profile      Json             @default("{}")
+  portraitId   String?
+  portraitSpec String?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
   relationship Relationship?
-  messages    Message[]
-  jobs        ImageJob[]
+  messages     Message[]
+  jobs         ImageJob[]
+  references   ReferenceImage[]
 }
 
 model Relationship {
@@ -62,6 +66,7 @@ model Message {
   kind        String    @default("text")
   imagePath   String?
   provider    String    @default("local")
+  metadata    Json      @default("{}")
   createdAt   DateTime  @default(now())
 
   @@index([characterId, createdAt])
@@ -75,8 +80,29 @@ model ImageJob {
   prompt      String
   status      String    @default("queued")
   error       String?
+  purpose     String    @default("chat")
+  serverUrl   String?
+  renderSpec  String?
+  metadata    Json      @default("{}")
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
   @@index([characterId, status])
+}
+
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+model ReferenceImage {
+  id          String    @id @default(cuid())
+  characterId String
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  filename    String
+  label       String
+  createdAt   DateTime  @default(now())
+
+  @@index([characterId])
 }

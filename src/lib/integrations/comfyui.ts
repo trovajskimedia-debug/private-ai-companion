@@ -1,168 +1,228 @@
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import type { Character } from "@prisma/client";
+import { db } from "../db";
 import { ApiError } from "../http";
+import { getComfySettings } from "../comfy-settings";
+import {
+  applyBindings,
+  modelCatalog,
+  validateWorkflow,
+  type ComfySettings,
+  type ObjectInfo,
+} from "../comfy-workflow";
+import { readProfile } from "../profile";
+import { portraitPrompt } from "../visual-prompt";
+export { portraitPrompt } from "../visual-prompt";
 
-type Workflow = Record<
-  string,
-  { class_type: string; inputs: Record<string, unknown> }
->;
-export const comfyBase = () =>
-  (process.env.COMFYUI_BASE_URL || "http://127.0.0.1:8188").replace(/\/$/, "");
-export async function comfyStatus() {
-  const checkpointConfigured = !!(
-    process.env.COMFYUI_CHECKPOINT || process.env.COMFYUI_WORKFLOW_PATH
-  );
+export async function comfyFetch(
+  base: string,
+  endpoint: string,
+  options: RequestInit = {},
+  timeout = 10_000,
+) {
   try {
-    const response = await fetch(`${comfyBase()}/system_stats`, {
-      signal: AbortSignal.timeout(4000),
+    return await fetch(`${base.replace(/\/$/, "")}${endpoint}`, {
+      ...options,
+      signal: AbortSignal.timeout(timeout),
       cache: "no-store",
-    });
-    if (!response.ok) throw new Error("Unavailable");
-    return { connected: true, checkpointConfigured };
-  } catch {
-    return {
-      connected: false,
-      checkpointConfigured,
-      error:
-        "ComfyUI is not reachable. Start it and configure a workflow or checkpoint.",
-    };
-  }
-}
-
-export function portraitPrompt(character: Character, scene: string) {
-  const outfit =
-    character.outfit === "yoga"
-      ? "yoga pants and a sports top"
-      : character.outfit === "dress"
-        ? "a casual dress"
-        : "relaxed trousers and a top";
-  return `Photorealistic editorial photograph of one fictional adult woman, ${character.age} years old, ${character.height} cm tall, ${character.build < 35 ? "slender" : character.build > 65 ? "athletic, broad-shouldered" : "balanced build"}, ${character.curves > 65 ? "curvy figure" : "natural proportions"}, ${character.hairStyle} hairstyle, hair color ${character.hairColor}, skin tone ${character.skinColor}, wearing ${outfit} in ${character.outfitColor} with top color ${character.topColor}. Scene: ${scene}. Natural skin texture, realistic anatomy, soft natural light, 85mm portrait lens, tasteful fully clothed portrait.`;
-}
-
-export function buildWorkflow(
-  prompt: string,
-  checkpoint: string,
-  seed: number,
-): Workflow {
-  return {
-    "1": {
-      class_type: "CheckpointLoaderSimple",
-      inputs: { ckpt_name: checkpoint },
-    },
-    "2": {
-      class_type: "CLIPTextEncode",
-      inputs: { text: prompt, clip: ["1", 1] },
-    },
-    "3": {
-      class_type: "CLIPTextEncode",
-      inputs: {
-        text: "child, underage, nude, nudity, explicit, deformed, extra limbs, watermark, text, illustration, cartoon",
-        clip: ["1", 1],
-      },
-    },
-    "4": {
-      class_type: "EmptyLatentImage",
-      inputs: { width: 768, height: 1024, batch_size: 1 },
-    },
-    "5": {
-      class_type: "KSampler",
-      inputs: {
-        seed,
-        steps: 25,
-        cfg: 7,
-        sampler_name: "euler",
-        scheduler: "normal",
-        denoise: 1,
-        model: ["1", 0],
-        positive: ["2", 0],
-        negative: ["3", 0],
-        latent_image: ["4", 0],
-      },
-    },
-    "6": {
-      class_type: "VAEDecode",
-      inputs: { samples: ["5", 0], vae: ["1", 2] },
-    },
-    "7": {
-      class_type: "SaveImage",
-      inputs: { filename_prefix: "PrivateCompanion", images: ["6", 0] },
-    },
-  };
-}
-
-export function fillWorkflow(
-  value: unknown,
-  prompt: string,
-  seed: number,
-): unknown {
-  if (typeof value === "string")
-    return value
-      .replaceAll("{{PROMPT}}", prompt)
-      .replaceAll("{{SEED}}", String(seed));
-  if (Array.isArray(value))
-    return value.map((item) => fillWorkflow(item, prompt, seed));
-  if (value && typeof value === "object")
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [
-        key,
-        fillWorkflow(item, prompt, seed),
-      ]),
-    );
-  return value;
-}
-
-export async function queueImage(character: Character, scene: string) {
-  const seed = Math.floor(Math.random() * 2 ** 32);
-  const prompt = portraitPrompt(character, scene);
-  let workflow: unknown;
-  if (process.env.COMFYUI_WORKFLOW_PATH) {
-    try {
-      workflow = fillWorkflow(
-        JSON.parse(await readFile(process.env.COMFYUI_WORKFLOW_PATH, "utf8")),
-        prompt,
-        seed,
-      );
-    } catch {
-      throw new ApiError(
-        503,
-        "The configured ComfyUI API workflow cannot be read. Check COMFYUI_WORKFLOW_PATH.",
-      );
-    }
-  } else {
-    if (!process.env.COMFYUI_CHECKPOINT)
-      throw new ApiError(
-        503,
-        "Set COMFYUI_CHECKPOINT to an installed checkpoint filename, or configure an API workflow.",
-      );
-    workflow = buildWorkflow(prompt, process.env.COMFYUI_CHECKPOINT, seed);
-  }
-  let response: Response;
-  try {
-    response = await fetch(`${comfyBase()}/prompt`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: workflow }),
-      signal: AbortSignal.timeout(15_000),
+      redirect: "error",
     });
   } catch {
     throw new ApiError(
       503,
-      "ComfyUI is not reachable. No image was generated.",
+      `ComfyUI is not reachable at ${base}. Start ComfyUI Desktop and copy its actual server address into Settings. When running the app on Windows, both services can use 127.0.0.1.`,
     );
   }
-  if (!response.ok)
+}
+export async function inspectComfySettings(settings: ComfySettings) {
+  const issues: string[] = [];
+  let connected = false;
+  let info: ObjectInfo = {};
+  try {
+    const stats = await comfyFetch(settings.baseUrl, "/system_stats", {}, 5000);
+    if (!stats.ok)
+      throw new ApiError(
+        502,
+        `ComfyUI returned HTTP ${stats.status} from /system_stats. Check the server address.`,
+      );
+    connected = true;
+    const response = await comfyFetch(
+      settings.baseUrl,
+      "/object_info",
+      {},
+      10_000,
+    );
+    if (!response.ok)
+      throw new ApiError(
+        502,
+        `Cannot read ComfyUI node/model definitions (HTTP ${response.status}).`,
+      );
+    info = await response.json();
+    if (!settings.workflow)
+      issues.push(
+        "Import a ComfyUI API workflow in Settings, or load the official Z-Image-Turbo template.",
+      );
+    else if (!settings.bindings.prompt)
+      issues.push("Select the workflow's positive prompt field in Settings.");
+    else {
+      try {
+        issues.push(
+          ...validateWorkflow(
+            applyBindings(
+              settings,
+              "A fully clothed fictional adult portrait",
+              42,
+            ),
+            info,
+            settings.bindings.reference,
+          ),
+        );
+      } catch (error) {
+        issues.push((error as Error).message);
+      }
+    }
+  } catch (error) {
+    issues.push(
+      error instanceof ApiError
+        ? error.message
+        : "ComfyUI returned an invalid API response.",
+    );
+  }
+  return {
+    connected,
+    ready: connected && !issues.length,
+    checkpointConfigured: !!settings.workflow,
+    model: settings.model,
+    issues,
+    error: issues[0],
+    models: modelCatalog(info),
+  };
+}
+export async function comfyStatus() {
+  return inspectComfySettings(await getComfySettings());
+}
+export async function queueImage(character: Character, scene: string) {
+  const settings = await getComfySettings();
+  if (!settings.workflow || !settings.bindings.prompt)
+    throw new ApiError(
+      503,
+      "Import a ComfyUI API workflow and select its prompt field in Settings first. Z-Image-Turbo is available as an official template.",
+    );
+  const profile = readProfile(character.profile);
+  const seed = profile.seed;
+  const prompt = portraitPrompt({ ...character, profile }, scene);
+  let reference: string | undefined;
+  if (profile.referenceImageId) {
+    if (!settings.bindings.reference)
+      throw new ApiError(
+        400,
+        "This character has a reference image, but the workflow has no reference-image binding. Choose a reference-capable workflow or clear the selected reference in Advanced.",
+      );
+    const image = await db.referenceImage.findFirst({
+      where: { id: profile.referenceImageId, characterId: character.id },
+    });
+    if (!image)
+      throw new ApiError(
+        400,
+        "The selected reference image does not belong to this character or was deleted.",
+      );
+    const bytes = await readFile(
+      path.join(process.cwd(), "data", "images", image.filename),
+    );
+    const form = new FormData();
+    form.set("image", new Blob([new Uint8Array(bytes)]), image.filename);
+    form.set("type", "input");
+    form.set("overwrite", "false");
+    const upload = await comfyFetch(
+      settings.baseUrl,
+      "/upload/image",
+      { method: "POST", body: form },
+      30_000,
+    );
+    if (!upload.ok)
+      throw new ApiError(502, "ComfyUI could not receive the reference image.");
+    const result = await upload.json();
+    if (typeof result.name !== "string")
+      throw new ApiError(
+        502,
+        "ComfyUI returned an invalid reference image filename.",
+      );
+    reference = result.subfolder
+      ? `${result.subfolder}/${result.name}`
+      : result.name;
+  }
+  let workflow;
+  try {
+    workflow = applyBindings(settings, prompt, seed, reference);
+  } catch (error) {
+    throw new ApiError(400, (error as Error).message);
+  }
+  const schemaResponse = await comfyFetch(settings.baseUrl, "/object_info");
+  if (!schemaResponse.ok)
     throw new ApiError(
       502,
-      "ComfyUI rejected the workflow. Check the installed checkpoint and node compatibility.",
+      "Could not read installed ComfyUI nodes and models.",
     );
+  const issues = validateWorkflow(workflow, await schemaResponse.json());
+  if (issues.length) throw new ApiError(400, issues.slice(0, 5).join(" "));
+  const response = await comfyFetch(
+    settings.baseUrl,
+    "/prompt",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: workflow }),
+    },
+    20_000,
+  );
   const data = await response.json();
+  if (!response.ok || data.error) {
+    const details = Object.values(data.node_errors || {})
+      .flatMap(
+        (node: unknown) =>
+          (node as { errors?: { message?: string; details?: string }[] })
+            .errors || [],
+      )
+      .map((item) =>
+        `${item.message || "Node error"}: ${item.details || ""}`.slice(0, 300),
+      )
+      .slice(0, 4)
+      .join(" ");
+    throw new ApiError(
+      502,
+      `ComfyUI rejected the workflow. ${details || "Check the selected models, installed nodes, and API export."}`,
+    );
+  }
   if (typeof data.prompt_id !== "string")
     throw new ApiError(502, "ComfyUI did not return a job ID.");
-  return data.prompt_id as string;
+  return {
+    promptId: data.prompt_id as string,
+    serverUrl: settings.baseUrl,
+    metadata: JSON.parse(
+      JSON.stringify({
+        seed: settings.bindings.seed ? seed : null,
+        prompt,
+        workflow,
+        model: settings.model,
+        clip: settings.clip,
+        vae: settings.vae,
+        width: settings.bindings.width ? settings.width : null,
+        height: settings.bindings.height ? settings.height : null,
+        referenceImageId: profile.referenceImageId || null,
+      }),
+    ),
+  };
 }
-
 export type ComfyHistory = {
-  status?: { status_str?: string; completed?: boolean };
+  status?: {
+    status_str?: string;
+    completed?: boolean;
+    messages?: [
+      string,
+      { exception_type?: string; exception_message?: string },
+    ][];
+  };
   outputs?: Record<
     string,
     { images?: { filename: string; subfolder: string; type: string }[] }
@@ -170,19 +230,13 @@ export type ComfyHistory = {
 };
 export async function imageHistory(
   promptId: string,
+  serverUrl?: string,
 ): Promise<ComfyHistory | null> {
-  let response: Response;
-  try {
-    response = await fetch(
-      `${comfyBase()}/history/${encodeURIComponent(promptId)}`,
-      { signal: AbortSignal.timeout(8000), cache: "no-store" },
-    );
-  } catch {
-    throw new ApiError(
-      503,
-      "ComfyUI is temporarily unreachable. The job is saved; retry shortly.",
-    );
-  }
+  const base = serverUrl || (await getComfySettings()).baseUrl;
+  const response = await comfyFetch(
+    base,
+    `/history/${encodeURIComponent(promptId)}`,
+  );
   if (!response.ok) throw new ApiError(502, "Could not check the ComfyUI job.");
   const data = await response.json();
   return data[promptId] || null;

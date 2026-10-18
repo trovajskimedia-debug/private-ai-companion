@@ -18,11 +18,13 @@ export async function POST(request: Request) {
   return route(async () => {
     sameOrigin(request);
     await requireAuth();
-    const data = characterSchema.parse(await body(request));
+    const data = characterSchema.parse(await body(request, 160_000));
     const character = await db.character.create({
       data: {
         ...data,
-        relationship: { create: {} },
+        relationship: {
+          create: { kind: data.profile?.relationshipRole || "friendship" },
+        },
         messages: {
           create: {
             role: "assistant",

@@ -4,12 +4,22 @@ export function Avatar({
   character,
   className = "",
   compact = false,
+  illustrationOnly = false,
 }: {
-  character: CharacterInput;
+  character: CharacterInput & { portraitId?: string | null };
   className?: string;
   compact?: boolean;
+  illustrationOnly?: boolean;
 }) {
   const c = character;
+  if (c.portraitId && !illustrationOnly)
+    return (
+      <img
+        src={`/api/images/${c.portraitId}`}
+        className={`photo-avatar ${className}`}
+        alt={`AI-generated portrait of ${c.name}`}
+      />
+    );
   const build = (c.build - 50) * 0.13;
   const hip = (c.curves - 50) * 0.12;
   const palettes: Record<string, [string, string]> = {

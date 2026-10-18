@@ -27,6 +27,8 @@ import { connectionProgress, relationshipLevel } from "@/lib/relationship";
 import { Avatar } from "./avatar";
 import { Flower } from "./flower";
 import { Studio } from "./studio";
+import { ComfySettingsPanel } from "./comfy-settings-panel";
+import { relationshipRoles, roleLabels } from "@/lib/profile";
 import { Chat } from "./chat";
 
 const navigation = [
@@ -404,7 +406,10 @@ export function CompanionApp() {
                       >
                         <Avatar character={character} />
                         <span className="card-label">
-                          <span className="status-dot" /> Your companion
+                          <span className="status-dot" />{" "}
+                          {character.portraitId
+                            ? "AI-generated photo"
+                            : "Illustrated fallback"}
                         </span>
                         <span className="card-spark">
                           <Sparkles size={15} />
@@ -485,6 +490,7 @@ export function CompanionApp() {
             <Studio
               key={editing?.id || "new"}
               character={editing}
+              onPersist={updated}
               onSave={(character) => {
                 updated(character);
                 setNotice("Your companion has been saved.");
@@ -510,6 +516,7 @@ export function CompanionApp() {
                   key={`wardrobe-${selected.id}`}
                   wardrobeOnly
                   character={selected}
+                  onPersist={updated}
                   onSave={(character) => {
                     updated(character);
                     setNotice("Wardrobe saved.");
@@ -581,9 +588,11 @@ export function CompanionApp() {
                             }
                           }}
                         >
-                          <option value="friendship">Friendship</option>
-                          <option value="romantic">Romantic</option>
-                          <option value="creative">Creative partnership</option>
+                          {relationshipRoles.map((role) => (
+                            <option key={role} value={role}>
+                              {roleLabels[role]}
+                            </option>
+                          ))}
                         </select>
                         <button
                           className="button secondary"
@@ -638,6 +647,7 @@ export function CompanionApp() {
                 title="Make yourself at home."
                 description="Connect local AI services and keep control of your data."
               />
+              <ComfySettingsPanel onSaved={refreshServices} />
               <div className="settings-grid">
                 <section className="panel">
                   <div className="section-heading">
@@ -662,28 +672,14 @@ export function CompanionApp() {
                         : services?.ollama.error || "Checking connection…"
                     }
                   />
-                  <ServiceRow
-                    title="ComfyUI"
-                    connected={
-                      !!services?.comfyui.connected &&
-                      !!services?.comfyui.checkpointConfigured
-                    }
-                    description={
-                      services?.comfyui.connected
-                        ? services.comfyui.checkpointConfigured
-                          ? "Connected · image generation configured"
-                          : "Service connected. Configure a checkpoint or workflow."
-                        : services?.comfyui.error || "Checking connection…"
-                    }
-                  />
                   <div className="setup-hint">
                     <h3>Connect your own models</h3>
                     <p>
                       Configure <code>OLLAMA_BASE_URL</code>,{" "}
-                      <code>OLLAMA_MODEL</code>, <code>COMFYUI_BASE_URL</code>{" "}
-                      and <code>COMFYUI_CHECKPOINT</code> in the server’s{" "}
-                      <code>.env</code> file, then restart the app. Full setup
-                      steps are in the repository README.
+                      <code>OLLAMA_MODEL</code> in the server’s{" "}
+                      <code>.env</code> file for Ollama. Configure ComfyUI
+                      above; saved ComfyUI settings take effect immediately.
+                      Full Windows steps are in the README.
                     </p>
                     <p>
                       Demo chat uses preset responses and is labeled in each

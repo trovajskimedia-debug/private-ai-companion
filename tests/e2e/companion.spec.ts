@@ -75,7 +75,9 @@ test("private companion workflow persists appearance, wardrobe, chat and relatio
   await page.getByRole("button", { name: "Imagine a photo" }).click();
   await page.getByRole("button", { name: "Generate with ComfyUI" }).click();
   await expect(
-    page.getByRole("alert").filter({ hasText: "COMFYUI_CHECKPOINT" }),
+    page
+      .getByRole("alert")
+      .filter({ hasText: "Import a ComfyUI API workflow" }),
   ).toBeVisible();
   await page
     .getByRole("button", { name: "Relationships", exact: true })

@@ -45,6 +45,7 @@ export function Chat({
   const [mode, setMode] = useState<"ollama" | "demo">(
     services?.ollama.connected ? "ollama" : "demo",
   );
+  const [requestImages, setRequestImages] = useState(true);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
@@ -134,13 +135,15 @@ export function Chat({
       const data = await api<{
         messages: Message[];
         relationship: Relationship;
+        job?: ImageJob;
       }>(`${base}/messages`, {
         method: "POST",
-        body: JSON.stringify({ content, mode }),
+        body: JSON.stringify({ content, mode, requestImages }),
       });
       setMessages((prev) => [...prev, ...data.messages]);
       setContent("");
       onRelationship(data.relationship);
+      if (data.job) setJobs((prev) => [...prev, data.job!]);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -298,11 +301,18 @@ export function Chat({
                     className={`message-bubble ${message.kind === "image" ? "image-bubble" : ""}`}
                   >
                     {message.kind === "image" && message.imagePath && (
-                      <img
-                        src={`/api/images/${message.id}`}
-                        alt={`${character.name}: ${message.content}`}
-                        loading="lazy"
-                      />
+                      <a
+                        href={`/api/images/${message.id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="Open full-size image"
+                      >
+                        <img
+                          src={`/api/images/${message.id}`}
+                          alt={`${character.name}: ${message.content}`}
+                          loading="lazy"
+                        />
+                      </a>
                     )}
                     <p>{message.content}</p>
                     {message.kind === "image" && (
@@ -405,11 +415,10 @@ export function Chat({
             )}
             Generate with ComfyUI
           </button>
-          {(!services?.comfyui.connected ||
-            !services?.comfyui.checkpointConfigured) && (
+          {!services?.comfyui.ready && (
             <small>
-              ComfyUI needs a running service and an installed checkpoint. You
-              can configure these in the server’s .env file.
+              ComfyUI needs a running service and a validated API workflow with
+              installed models. Configure it in Settings & integrations.
             </small>
           )}
         </form>
@@ -457,6 +466,15 @@ export function Chat({
             </button>
           </div>
         </div>
+        <label className="image-request-toggle">
+          <input
+            type="checkbox"
+            checked={requestImages}
+            onChange={(e) => setRequestImages(e.target.checked)}
+          />
+          Generate photos for requests like “Skicka en bild på dig i svarta
+          leggings”
+        </label>
         <div className="composer-hint">
           <span>
             <LockIcon />
