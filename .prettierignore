@@ -1,0 +1,10 @@
+.next/
+.local/
+node_modules/
+data/
+test-results/
+playwright-report/
+package-lock.json
+next-env.d.ts
+prisma/
+.env

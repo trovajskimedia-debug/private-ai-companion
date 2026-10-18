@@ -1,0 +1,82 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Owner {
+  id           String   @id @default("owner")
+  passwordHash String
+  createdAt    DateTime @default(now())
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+model Character {
+  id          String       @id @default(cuid())
+  name        String
+  age         Int          @default(25)
+  bio         String
+  personality String
+  interests   String
+  avatar      String       @default("sage")
+  skinColor   String       @default("#d4a484")
+  hairColor   String       @default("#342720")
+  hairStyle   String       @default("long")
+  height      Int          @default(168)
+  build       Int          @default(45)
+  curves      Int          @default(50)
+  outfit      String       @default("yoga")
+  outfitColor String       @default("#8276ad")
+  topColor    String       @default("#e8dfd0")
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  relationship Relationship?
+  messages    Message[]
+  jobs        ImageJob[]
+}
+
+model Relationship {
+  id           String    @id @default(cuid())
+  characterId  String    @unique
+  character    Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  kind         String    @default("friendship")
+  points       Int       @default(0)
+  interactions Int       @default(0)
+  lastActivity DateTime  @default(now())
+}
+
+model Message {
+  id          String    @id @default(cuid())
+  characterId String
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  role        String
+  content     String
+  kind        String    @default("text")
+  imagePath   String?
+  provider    String    @default("local")
+  createdAt   DateTime  @default(now())
+
+  @@index([characterId, createdAt])
+}
+
+model ImageJob {
+  id          String    @id @default(cuid())
+  characterId String
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  promptId    String?   @unique
+  prompt      String
+  status      String    @default("queued")
+  error       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([characterId, status])
+}
